@@ -13,8 +13,8 @@ use netlink_packet_route::link::{
 use netlink_packet_route::neighbour::{
     NeighbourAddress, NeighbourAttribute, NeighbourFlags, NeighbourState,
 };
-use netlink_packet_route::route::{RouteProtocol, RouteScope};
-use netlink_packet_route::rule::{RuleAction, RuleAttribute, RuleFlags};
+use netlink_packet_route::route::{RouteHeader, RouteProtocol, RouteScope};
+use netlink_packet_route::rule::{RuleAction, RuleAttribute, RuleFlags, RuleMessage};
 use netlink_packet_route::AddressFamily;
 use rtnetlink::{Handle, LinkBridge, LinkUnspec, RouteMessageBuilder};
 use serde::Serialize;
@@ -78,6 +78,20 @@ pub struct RuleRow {
 }
 
 // ------------------------------------------------------------------- helpers
+
+/// rtnetlink's `table_id()` pushes `FRA_TABLE` for tables > 255 but leaves the
+/// 8-bit `frh_table` header field at its `RT_TABLE_MAIN` (254) default. The
+/// kernel then creates the rule under table 254, and on delete its
+/// `frh->table != rule->table` check (which reads the header, not `FRA_TABLE`)
+/// never matches a >255 rule -- so deletes silently no-op and the rule can
+/// never be reconciled away. iproute2 zeroes the header to `RT_TABLE_UNSPEC`
+/// in this case so the kernel relies solely on `FRA_TABLE`; mirror that.
+/// Android default-network tables are 1000+ifindex, always in this range.
+fn zero_compat_table(msg: &mut RuleMessage, table: u32) {
+    if table > 255 {
+        msg.header.table = RouteHeader::RT_TABLE_UNSPEC;
+    }
+}
 
 fn mac_to_string(b: &[u8]) -> String {
     b.iter()
@@ -357,13 +371,14 @@ impl Net {
     /// `.v4()`/`.v6()` yield distinct typed builders, so the family branch
     /// can't be factored out (it returns different types) -- inline like pbridge.
     pub async fn rule_add(&self, v6: bool, iif: &str, table: u32) -> Result<()> {
-        let req = self
+        let mut req = self
             .handle
             .rule()
             .add()
             .input_interface(iif.to_string())
             .table_id(table)
             .action(RuleAction::ToTable);
+        zero_compat_table(req.message_mut(), table);
         let res = if v6 {
             req.v6().execute().await
         } else {
@@ -378,13 +393,14 @@ impl Net {
 
     /// `ip [-4|-6] rule del from all iif <iif> lookup <table>` (idempotent).
     pub async fn rule_del(&self, v6: bool, iif: &str, table: u32) -> Result<()> {
-        let base = self
+        let mut base = self
             .handle
             .rule()
             .add()
             .input_interface(iif.to_string())
             .table_id(table)
             .action(RuleAction::ToTable);
+        zero_compat_table(base.message_mut(), table);
         let msg = if v6 {
             base.v6().message_mut().clone()
         } else {
