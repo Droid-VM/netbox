@@ -92,21 +92,27 @@ enum Cmd {
         #[arg(long = "v6")]
         v6: bool,
     },
-    /// Add `from all iif <iif> lookup <table>` (idempotent).
+    /// Add `from all iif <iif> [priority <p>] lookup <table>` (idempotent).
     RuleAdd {
         #[arg(long)]
         iif: String,
         #[arg(long)]
         table: u32,
+        /// FRA_PRIORITY; pins evaluation order (omit -> kernel default 0).
+        #[arg(long)]
+        priority: Option<u32>,
         #[arg(long = "v6")]
         v6: bool,
     },
-    /// Remove `from all iif <iif> lookup <table>` (idempotent).
+    /// Remove `from all iif <iif> [priority <p>] lookup <table>` (idempotent).
     RuleDel {
         #[arg(long)]
         iif: String,
         #[arg(long)]
         table: u32,
+        /// Match FRA_PRIORITY too when set (must match the add).
+        #[arg(long)]
+        priority: Option<u32>,
         #[arg(long = "v6")]
         v6: bool,
     },
@@ -228,8 +234,12 @@ async fn run_oneshot(net: &nl::Net, cmd: Cmd) -> Result<()> {
             let (ip, plen) = parse_cidr(&dst)?;
             net.route_add(&dev, ip, plen, table).await
         }
-        Cmd::RuleAdd { iif, table, v6 } => net.rule_add(v6, &iif, table).await,
-        Cmd::RuleDel { iif, table, v6 } => net.rule_del(v6, &iif, table).await,
+        Cmd::RuleAdd { iif, table, priority, v6 } => {
+            net.rule_add(v6, &iif, table, priority).await
+        }
+        Cmd::RuleDel { iif, table, priority, v6 } => {
+            net.rule_del(v6, &iif, table, priority).await
+        }
         Cmd::FdbAdd { mac, dev } => net.fdb_add(&mac, &dev).await,
         Cmd::LinkList {
             master,

@@ -367,10 +367,19 @@ impl Net {
 
     // ---------------------------------------------------------- rule mutations
 
-    /// `ip [-4|-6] rule add from all iif <iif> lookup <table>` (idempotent).
-    /// `.v4()`/`.v6()` yield distinct typed builders, so the family branch
-    /// can't be factored out (it returns different types) -- inline like pbridge.
-    pub async fn rule_add(&self, v6: bool, iif: &str, table: u32) -> Result<()> {
+    /// `ip [-4|-6] rule add from all iif <iif> [priority <p>] lookup <table>`
+    /// (idempotent). `.v4()`/`.v6()` yield distinct typed builders, so the
+    /// family branch can't be factored out (it returns different types) --
+    /// inline like pbridge. When `priority` is set it pins FRA_PRIORITY so the
+    /// kernel's evaluation order is explicit instead of insertion-order
+    /// dependent (same-priority rules are FIFO/LIFO per kernel version).
+    pub async fn rule_add(
+        &self,
+        v6: bool,
+        iif: &str,
+        table: u32,
+        priority: Option<u32>,
+    ) -> Result<()> {
         let mut req = self
             .handle
             .rule()
@@ -378,6 +387,9 @@ impl Net {
             .input_interface(iif.to_string())
             .table_id(table)
             .action(RuleAction::ToTable);
+        if let Some(p) = priority {
+            req = req.priority(p);
+        }
         zero_compat_table(req.message_mut(), table);
         let res = if v6 {
             req.v6().execute().await
@@ -391,8 +403,16 @@ impl Net {
         }
     }
 
-    /// `ip [-4|-6] rule del from all iif <iif> lookup <table>` (idempotent).
-    pub async fn rule_del(&self, v6: bool, iif: &str, table: u32) -> Result<()> {
+    /// `ip [-4|-6] rule del from all iif <iif> [priority <p>] lookup <table>`
+    /// (idempotent). `priority` must match the add when it was set, since the
+    /// kernel matches FRA_PRIORITY when present.
+    pub async fn rule_del(
+        &self,
+        v6: bool,
+        iif: &str,
+        table: u32,
+        priority: Option<u32>,
+    ) -> Result<()> {
         let mut base = self
             .handle
             .rule()
@@ -400,6 +420,9 @@ impl Net {
             .input_interface(iif.to_string())
             .table_id(table)
             .action(RuleAction::ToTable);
+        if let Some(p) = priority {
+            base = base.priority(p);
+        }
         zero_compat_table(base.message_mut(), table);
         let msg = if v6 {
             base.v6().message_mut().clone()
